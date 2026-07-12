@@ -1,0 +1,7 @@
+# build output
+build/
+
+# macOS / editor cruft
+.DS_Store
+*.o
+*.obj
