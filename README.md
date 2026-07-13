@@ -37,11 +37,27 @@ the MDD idles around 40–55 °C). They're `#define`s at the top of
 
 ## Install
 
-1. Download **`dist/CPUTempCSM.bin`** (a MacBinary file) and decompress it on the Mac
-   (Stuffit Expander, or any tool that unpacks MacBinary) → a file named `CPUTempCSM`.
-2. Drop `CPUTempCSM` into **System Folder ▸ Control Strip Modules**.
-3. **Restart.** The temperature tile appears in the Control Strip. Click it to switch reading
+Two prebuilt downloads are in [`dist/`](dist/). **Use the `.hqx` if you have any trouble** —
+it's plain 7-bit text and survives any download/transfer intact.
+
+- **`dist/CPUTempCSM.hqx`** (BinHex — recommended) — decode with StuffIt Expander.
+- **`dist/CPUTempCSM.bin`** (MacBinary II) — decode with StuffIt Expander / DropStuff.
+
+Steps:
+
+1. On GitHub, get the file with the **"Download raw file"** button (the download icon on the
+   file's page) — *don't* copy-paste it or "Save As" the web page, which corrupts binary data.
+2. Get it onto the Mac and **decode it there** (dropping it on **StuffIt Expander** works for
+   both `.hqx` and `.bin`) → a file named `CPUTempCSM`. Decode on the classic Mac, or transfer
+   in a way that preserves resource forks — the module's content lives in its resource fork.
+3. Drop `CPUTempCSM` into **System Folder ▸ Control Strip Modules**.
+4. **Restart.** The temperature tile appears in the Control Strip. Click it to switch reading
    or units.
+
+> **Note on the `.bin`:** it is re-encoded with Apple's `macbinary` tool so its CRC validates
+> in strict decoders (The Unarchiver, current StuffIt). A MacBinary produced directly by the
+> Retro68 build tools has a CRC those tools reject — if you build your own, run
+> [`csm/scripts/package-dist.sh`](csm/scripts/package-dist.sh) to produce clean `.bin`/`.hqx`.
 
 (Or build it yourself — see [BUILD.md](BUILD.md).)
 

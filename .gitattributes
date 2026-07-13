@@ -1,0 +1,4 @@
+# Preserve binary artifacts byte-for-byte (no EOL/encoding normalization).
+*.bin binary
+*.hqx binary
+*.img binary
