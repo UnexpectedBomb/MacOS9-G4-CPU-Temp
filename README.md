@@ -19,6 +19,8 @@ was only ±12 °C.
 > other models is exactly how we build confidence. It is **strictly read-only** on the
 > sensors (see *Safety* below).
 
+![The CPU Temp module in the Mac OS 9 Control Strip, showing the reading (48°C) and its menu](docs/screenshot-menu.jpg)
+
 ## Features
 
 - **CPU temperature** — from the DS1775 digital thermometer (I²C 0x49), 0.5 °C resolution.
