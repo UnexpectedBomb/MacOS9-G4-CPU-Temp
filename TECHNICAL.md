@@ -109,3 +109,55 @@ defaults), which is how the test machine was recovered.
   mutable fragment globals crash the whole Control Strip. All per-instance state lives in a
   heap block returned from `sdevInitModule` as the refCon and handed back as `params`.
 - The sensor read runs on the periodic tickle, throttled to ~2 s via `TickCount`.
+
+## Universal backends (auto-detection)
+
+At load, after finding a memory-mapped I²C controller, `detect_backend()` probes for a sensor,
+first match wins (a probe "succeeds" when the device ACKs; an absent device just NAKs the address
+phase, which is the normal "not fitted" result, not an error):
+
+| Order | Backend | Address | Read |
+|-------|---------|---------|------|
+| 1 | DS1775 (+ ADM1030 case) | `0x49` / `0x2c` | reg 0 (2 bytes, 8.8) / reg `0x0A` (1 byte) |
+| 2 | MAX6642 | `0x4A`* | remote (CPU) reg `0x01`, local reg `0x00`, 1 °C/LSB |
+| 3 | ADT7460 / ADT7467 | `0x2E` | remote1 (CPU) `0x25`, local `0x26`; part from ID reg `0x3D` |
+| 4 | on-chip **TAU** | — | THRM1 SPR (1019) binary search, ±12 °C |
+| 5 | none | — | display `n/a` |
+
+All backends are **read-only**; the alert + peak tracking run in the shared read path so they
+work regardless of backend. Only the DS1775 path is hardware-verified; the others are ported
+from documented register maps (Linux `drivers/hwmon/adm1031.c`, `drivers/macintosh/therm_adt746x.c`,
+the MAX6642 datasheet) and await testers.
+
+### TAU is CPU-gated (or it crashes the Control Strip)
+
+The TAU fallback executes `mfspr/mtspr` on SPR 1019 (THRM1). **Those SPRs were removed on the
+7410 / 745x / 744x family** (e.g. the Mac Mini's 7447A) — accessing them is an *illegal
+instruction* that faults inside `sdevInitModule` and takes the whole Control Strip down
+("installed but not active / could not be started up"). So the TAU probe is gated behind
+`Gestalt(gestaltNativeCPUtype)` and only runs on `gestaltCPU750` (0x0108) and `gestaltCPUG4`
+(0x010C, the 7400) — exactly the CPUs that have working TAU. Everything newer skips it and lands
+on `n/a`. (Learned the hard way: an unguarded optional SPR access is fatal to the whole strip.)
+
+## Why the Mac Mini G4 is out of reach from OS 9
+
+The Mini G4 (PowerMac10,1) *does* have a MAX6642 — but the device tree shows its `temp-monitor`
+node is a child of **`pmu-i2c`**, a bus with no `AAPL,address` (not memory-mapped). It's behind
+the **PMU**. Confirmed on hardware: the MAX6642 never ACKs on either memory-mapped KeyWest bus
+(all channels, both byte-lane bases), and `pmu-i2c`'s only readable path is via PMU commands.
+
+Reading it means i2c-over-PMU (Linux does this via `via-pmu`: `PMU_I2C_CMD` + a
+`{bus, mode, address, sub_addr, count, …}` header, send-then-poll). The protocol is known — but
+**OS 9 provides no way to send raw PMU commands** on New-World machines: `Power.h` exposes only
+the high-level Power Manager (battery/sleep/CPU-speed), and the old `PMgrOp` raw-command path was
+Old-World-PowerBook-only. And since the Mini never officially ran OS 9, there's no Apple OS 9
+thermal code to borrow. So the Mini's sensor is genuinely unreadable from OS 9 at runtime.
+
+**Open Firmware can read it, though** — OF ships its own `pmu-i2c` driver. The `temp-monitor`
+node exposes `.temp` / `read-reg`, so a boot-time spot-check works (see the README). This is how
+the Mini's readings were confirmed: `.temp` → `Loc Temp 53 / Rem Temp 46` (°C), matching
+`read-reg` 1 (remote/CPU) = `0x2e` = 46 and reg 0 (local) = `0x35` = 53.
+
+\* Note the doc-supplied MAX6642 address (`0x4A`, KeyWest) did not match real hardware; on the
+Mini the device tree reports the MAX6642 on the PMU bus at a different address entirely — another
+reason to run `CPUTempProbe` on any new machine before trusting a table.

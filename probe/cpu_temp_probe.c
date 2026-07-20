@@ -149,6 +149,36 @@ static int buf_has(const char *buf, long len, const char *needle)
     return 0;
 }
 
+/* Targeted scan of temperature-sensor address ranges on ONE i2c node, so a new
+ * machine's sensor is found even if it sits on a non-preferred node or channel.
+ * Read-only. Ranges: 0x2C-0x2F (ADM1030/ADT746x family), 0x48-0x4F (DS1775 /
+ * MAX6642 / LM8x family). For each ACK it also reports reg 0x01 and the ADT
+ * device-ID reg 0x3D, which help identify the part. */
+static void scan_node(UInt32 base, UInt32 step)
+{
+    static const UInt8 addrs[] = { 0x2C,0x2D,0x2E,0x2F,
+                                   0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F };
+    volatile UInt8 *saveB = gBase; int saveS = gShift;
+    int sh = 0, chan, i, found = 0;
+    UInt32 s = step ? step : 0x10;
+    while (!(s & 1)) { s >>= 1; sh++; }
+    gBase = (volatile UInt8 *)base; gShift = sh;
+    for (chan = 0; chan <= 1; chan++) {
+        for (i = 0; i < (int)sizeof(addrs); i++) {
+            UInt8 b = 0, r1 = 0xFF, id = 0xFF;
+            if (kw_read_dev(addrs[i], 0x00, &b, 1, KW_MODE_COMBINED, chan, 0) == 0) {
+                kw_read_dev(addrs[i], 0x01, &r1, 1, KW_MODE_COMBINED, chan, 0);
+                kw_read_dev(addrs[i], 0x3D, &id, 1, KW_MODE_COMBINED, chan, 0);
+                printf("      ACK addr=0x%02x chan=%d  reg00=0x%02x reg01=0x%02x reg3D=0x%02x\n",
+                       addrs[i], chan, b, r1, id);
+                found = 1;
+            }
+        }
+    }
+    if (!found) printf("      (no temp-sensor ACK on this node, chan 0-1)\n");
+    gBase = saveB; gShift = saveS;
+}
+
 /*
  * Enumerate the whole Name Registry; find the Uni-N i2c controller by its
  * "compatible" property. Prints every i2c-ish node it sees plus a node count
@@ -209,6 +239,7 @@ static int find_i2c(UInt32 *baseOut, UInt32 *stepOut, int *viaAAPL)
         if (haveAAPL)      { base = aa[0]; }
         else if (haveReg)  { base = reg[0] + 3; }   /* +3 = observed byte lane */
         else               { continue; }
+        scan_node(base, st ? st : 0x10);            /* report any temp sensor on this node */
         pri = (haveAAPL ? 2 : 1) + (isUniN ? 2 : 0); /* uni-n+AAPL=4 best */
         if (pri > bestPri) {
             bestPri = pri; bestBase = base; bestStep = st ? st : 0x10; bestAAPL = haveAAPL;
@@ -224,6 +255,138 @@ static int find_i2c(UInt32 *baseOut, UInt32 *stepOut, int *viaAAPL)
     return 1;
 }
 
+/* Print every device-tree node that looks like a temperature/thermal sensor, from
+ * its name/compatible/device_type — the authoritative way to learn a machine's
+ * sensor part + address + bus (a small `reg` value = an i2c child address). This
+ * surfaces sensors on buses we can't MMIO-scan (e.g. pmu-i2c). */
+static void dump_sensor_nodes(void)
+{
+    static const char *kw[] = { "temp", "therm", "sensor", "fan", "monitor",
+        "ds1775", "ds16", "max66", "max669", "adt74", "lm8", "lm90",
+        "cpu-id", "adc", "thermostat", "diode", 0 };
+    RegEntryIter it;
+    RegEntryID   node;
+    Boolean      done = false, first = true;
+    int n = 0;
+
+    printf("[S] Device-tree sensor/thermal nodes:\n");
+    if (RegistryEntryIterateCreate(&it) != noErr) { printf("    iterate FAILED\n"); return; }
+    for (;;) {
+        char name[64], compat[160], dtype[48];
+        UInt32 reg[8];
+        RegPropertyValueSize sz;
+        int i, hit = 0;
+        OSStatus err = RegistryEntryIterate(&it, first ? kRegIterDescendants : kRegIterContinue, &node, &done);
+        first = 0;
+        if (err != noErr || done) break;
+
+        memset(name, 0, sizeof(name));   sz = sizeof(name) - 1;   RegistryPropertyGet(&node, "name", name, &sz);
+        memset(compat, 0, sizeof(compat)); sz = sizeof(compat) - 1; RegistryPropertyGet(&node, "compatible", compat, &sz);
+        memset(dtype, 0, sizeof(dtype));  sz = sizeof(dtype) - 1;  RegistryPropertyGet(&node, "device_type", dtype, &sz);
+        for (i = 0; kw[i]; i++)
+            if (buf_has(name, (long)sizeof(name), kw[i])
+                || buf_has(compat, (long)sizeof(compat), kw[i])
+                || buf_has(dtype, (long)sizeof(dtype), kw[i])) { hit = 1; break; }
+        if (!hit) continue;
+
+        reg[0] = reg[1] = 0; sz = sizeof(reg); RegistryPropertyGet(&node, "reg", reg, &sz);
+        printf("    '%s' compat='%s' type='%s' reg=0x%lx,0x%lx\n",
+               name, compat, dtype, PL(reg[0]), PL(reg[1]));
+        n++;
+    }
+    RegistryEntryIterateDispose(&it);
+    printf("    [%d sensor/thermal node(s) found]\n\n", n);
+}
+
+/* List the immediate children of one node (name/compatible/reg) — maps a sensor
+ * to its parent i2c controller. Uses a separate iterator so the caller's walk is
+ * undisturbed. */
+static void list_children(RegEntryID *parent)
+{
+    RegEntryIter ci;
+    RegEntryID   ch;
+    Boolean      d = false;
+    int          n = 0;
+    Boolean cfirst = true;
+    if (RegistryEntryIterateCreate(&ci) != noErr) return;
+    if (RegistryEntryIterateSet(&ci, parent) != noErr) { RegistryEntryIterateDispose(&ci); return; }
+    for (;;) {
+        char nm[64], cp[128];
+        UInt32 reg[8];
+        RegPropertyValueSize sz;
+        /* kRegIterChildren on the FIRST call, kRegIterContinue after — else it
+         * only ever returns the first child (same gotcha as kRegIterDescendants). */
+        OSStatus e = RegistryEntryIterate(&ci, cfirst ? kRegIterChildren : kRegIterContinue, &ch, &d);
+        cfirst = false;
+        if (e != noErr || d) break;
+        memset(nm, 0, sizeof(nm)); sz = sizeof(nm) - 1; RegistryPropertyGet(&ch, "name", nm, &sz);
+        memset(cp, 0, sizeof(cp)); sz = sizeof(cp) - 1; RegistryPropertyGet(&ch, "compatible", cp, &sz);
+        reg[0] = 0; sz = sizeof(reg); RegistryPropertyGet(&ch, "reg", reg, &sz);
+        printf("        child '%s' compat='%s' reg=0x%lx\n", nm, cp, PL(reg[0]));
+        n++;
+    }
+    RegistryEntryIterateDispose(&ci);
+    if (!n) printf("        (no children enumerated)\n");
+}
+
+/* Brute-force the MAX6642 at 7-bit 0x48: try this controller's base both as-is
+ * and with the +3 big-endian byte-lane forced, across channels 0-7. On any ACK,
+ * print the local (reg 0x00) and remote/CPU (reg 0x01) temperatures. */
+static void sweep_max6642(UInt32 aapl, UInt32 step)
+{
+    volatile UInt8 *saveB = gBase; int saveS = gShift;
+    UInt32 bases[2]; int nb = 1, bi, ch, sh = 0;
+    UInt32 s = step ? step : 0x10;
+    while (!(s & 1)) { s >>= 1; sh++; }
+    gShift = sh;
+    bases[0] = aapl;
+    if ((aapl & 3) != 3) { bases[1] = (aapl & ~3UL) | 3UL; nb = 2; }   /* also try +3 lane */
+    for (bi = 0; bi < nb; bi++) {
+        gBase = (volatile UInt8 *)bases[bi];
+        for (ch = 0; ch <= 7; ch++) {
+            UInt8 lo = 0, rem = 0;
+            if (kw_read_dev(0x48, 0x00, &lo, 1, KW_MODE_COMBINED, ch, 0) == 0) {
+                kw_read_dev(0x48, 0x01, &rem, 1, KW_MODE_COMBINED, ch, 0);
+                printf("      *** MAX6642 ACK  base=0x%08lx chan=%d  local=0x%02x (%d C)  remote/CPU=0x%02x (%d C)\n",
+                       PL(bases[bi]), ch, lo, (int)lo, rem, (int)rem);
+            }
+        }
+    }
+    gBase = saveB; gShift = saveS;
+}
+
+/* For each memory-mapped i2c controller: print it, list its children (to find
+ * which one hosts the MAX6642), and brute-force the 0x48 read. */
+static void diagnose_controllers(void)
+{
+    RegEntryIter it;
+    RegEntryID   node;
+    Boolean      done = false, first = true;
+    printf("[C] i2c controllers — children + MAX6642(0x48) read sweep:\n");
+    if (RegistryEntryIterateCreate(&it) != noErr) { printf("    iterate FAILED\n"); return; }
+    for (;;) {
+        char compat[160];
+        UInt32 aa[8], step = 0x10;
+        RegPropertyValueSize sz;
+        OSStatus err = RegistryEntryIterate(&it, first ? kRegIterDescendants : kRegIterContinue, &node, &done);
+        first = 0;
+        if (err != noErr || done) break;
+        int haveAAPL;
+        memset(compat, 0, sizeof(compat)); sz = sizeof(compat) - 1;
+        if (RegistryPropertyGet(&node, "compatible", compat, &sz) != noErr) continue;
+        if (!buf_has(compat, (long)(sizeof(compat) - 1), "i2c")) continue;
+        aa[0] = 0; sz = sizeof(aa);
+        haveAAPL = (RegistryPropertyGet(&node, "AAPL,address", aa, &sz) == noErr);
+        { RegPropertyValueSize s = 4; step = 0x10; RegistryPropertyGet(&node, "AAPL,address-step", &step, &s); }
+        printf("    i2c node compat='%s' AAPL=%s0x%08lx step=0x%lx\n",
+               compat, haveAAPL ? "" : "(none) ", PL(aa[0]), PL(step));
+        list_children(&node);                       /* list children of EVERY i2c node (incl. pmu-i2c) */
+        if (haveAAPL) sweep_max6642(aa[0], step);    /* sweep only the memory-mapped ones */
+    }
+    RegistryEntryIterateDispose(&it);
+    printf("\n");
+}
+
 int main(void)
 {
     UInt32 base = 0, step = 0x10;
@@ -235,7 +398,10 @@ int main(void)
     modes[1] = KW_MODE_STANDARD; mn[1] = "STANDARD";
 
     setvbuf(stdout, NULL, _IONBF, 0);
-    printf("==== G4 MDD CPU Temp Probe v3 (DS1775 @ Uni-N/KeyWest I2C) ====\n\n");
+    printf("==== G3/G4 Temp Probe v7 (full child enum + MAX6642 sweep) ====\n\n");
+
+    dump_sensor_nodes();
+    diagnose_controllers();
 
     printf("[1] Scanning Name Registry for the i2c controller (by compatible)...\n");
     if (!find_i2c(&base, &step, &viaAAPL)) {
