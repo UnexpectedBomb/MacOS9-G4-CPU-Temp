@@ -23,7 +23,7 @@ falls back to the on-chip TAU (only where that chip actually has it). See *Suppo
 > is **strictly read-only** on all sensors (see *Safety*), and if it finds no readable sensor it
 > simply shows `n/a` — it never hangs or crashes the Control Strip.
 
-![The CPU Temp module in the Mac OS 9 Control Strip, showing the reading (48°C) and its menu](docs/screenshot-menu.jpg)
+![The CPU Temp module in the Mac OS 9 Control Strip, showing the 47°C reading and its menu — with the auto-detected "Sensor: DS1775 + ADM1030" header at the top](docs/screenshot-menu.jpg)
 
 ## Features
 
