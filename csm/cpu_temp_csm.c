@@ -3,10 +3,14 @@
  *
  * Shows live CPU (and, where available, case/board) temperature under Mac OS 9,
  * auto-detecting the machine's sensor at load. Backends:
- *   - DS1775 + ADM1030  (Power Mac G4 MDD / FW800)     — CPU 0x49, case 0x2c
- *   - MAX6642           (Mac Mini G4)                  — 0x4A
- *   - ADT7460 / ADT7467 (iBook G4, PowerBook G4 Al)    — 0x2E
- *   - PowerPC TAU       (G3 750 / G4 7400 — no I2C)    — on-chip SPRs, +-12 C
+ *   - DS1775 (+ ADM1030) (Power Mac G4 MDD / FW800, PowerBook G4 Titanium) CPU 0x49
+ *   - MAX6642            (Mac Mini G4)                                      0x4A
+ *   - ADT7460 / ADT7467  (iBook G4, PowerBook G4 Al)                        0x2E
+ *
+ * (There is no PowerPC-TAU backend: reading the on-chip THRM SPRs needs a
+ * privileged instruction, and OS 9 runs Control-Strip code in USER mode, so any
+ * mtspr/mfspr to THRM faults with a privilege violation. It is unreachable from
+ * an 'sdev', and the 745x dropped THRM anyway.)
  *
  * A click pops a menu: an italic, disabled "Sensor: ..." label (informational,
  * like the AirPort CSM), then two independent checkmark groups — WHAT to show
@@ -20,9 +24,11 @@
  * The over-temperature alert monitors the CPU on ALL backends, regardless of
  * which reading is on screen.
  *
- * TESTED: DS1775 backend on a dual-1.25GHz MDD (PowerMac3,6). The MAX6642, ADT,
- * and TAU backends are implemented from documented register maps but are NOT yet
- * hardware-verified — use CPUTempProbe to confirm on a new machine.
+ * TESTED: DS1775 backend on a dual-1.25GHz MDD (PowerMac3,6) and a 667 MHz
+ * PowerBook G4 Titanium (DS1775 at 0x49, no ADM1030). The MAX6642 and ADT
+ * backends are implemented from documented register maps but are NOT yet
+ * hardware-verified; use CPUTempProbe / the TiBook probe to confirm on a new
+ * machine.
  *
  * Entry ABI (Apple patent US6493002): pascal long main(long msg, long params,
  * Rect*, GrafPtr). All per-instance state lives in the refCon (never fragment
@@ -105,8 +111,7 @@ typedef enum {
     kBackendDS1775  = 1,   /* MDD / FW800: DS1775 + ADM1030 */
     kBackendMAX6642 = 2,   /* Mac Mini G4 */
     kBackendADT7460 = 3,   /* iBook G4, PowerBook G4 Al */
-    kBackendADT7467 = 4,
-    kBackendTAU     = 5    /* G3 / G4 7400 on-chip thermal assist */
+    kBackendADT7467 = 4
 } TempBackend;
 
 typedef struct {
@@ -114,7 +119,7 @@ typedef struct {
     int    shift, chan;
     Boolean valid;
     TempBackend backend;
-    Boolean tauApprox;         /* displaying a TAU reading (+-12 C) */
+    Boolean haveADM;           /* DS1775 backend: an ADM1030 was also detected */
     int    dispMode;           /* M_CPU / M_CASE */
     Boolean useF;
     Boolean alerted;
@@ -241,41 +246,6 @@ static Boolean find_i2c(TempState *st)
     return true;
 }
 
-/* ---------- PowerPC TAU (on-chip thermal assist; SPR 1019 = THRM1) ----------
- * UNVERIFIED on hardware. Classic Mac OS runs supervisor-mode, so mtspr/mfspr on
- * THRM1 are permitted; the SPR exists on all OS-9-capable 750/74xx CPUs (returns
- * unreliable data on the 745x, where tau_probe() then reports "dead"). */
-
-static Boolean tau_probe(void)
-{
-    UInt32 r0, r127, thrm;
-    thrm = (0UL << 23) | 1;                 /* threshold 0 C, V=1  -> TIV should be 1 */
-    __asm__ __volatile__("mtspr 1019,%0; isync" : : "r"(thrm));
-    __asm__ __volatile__("mfspr %0,1019" : "=r"(r0));
-    thrm = (127UL << 23) | 1;               /* threshold 127 C, V=1 -> TIV should be 0 */
-    __asm__ __volatile__("mtspr 1019,%0; isync" : : "r"(thrm));
-    __asm__ __volatile__("mfspr %0,1019" : "=r"(r127));
-    thrm = 0; __asm__ __volatile__("mtspr 1019,%0; isync" : : "r"(thrm));   /* disable */
-    return (Boolean)((r0 >> 31) != (r127 >> 31));   /* responds to threshold => alive */
-}
-
-static SInt16 tau_read_x10(void)
-{
-    int lo = 0, hi = 126, mid, i;
-    UInt32 thrm;
-    while (hi - lo > 1) {
-        mid = (lo + hi) / 2;
-        thrm = ((UInt32)mid << 23) | 1;     /* threshold=mid, V=1, TIN=0 */
-        __asm__ __volatile__("mtspr 1019,%0; isync" : : "r"(thrm));
-        for (i = 0; i < 500; i++) __asm__ __volatile__("nop");   /* settle */
-        __asm__ __volatile__("mfspr %0,1019" : "=r"(thrm));
-        if (thrm & 0x80000000UL) lo = mid;  /* TIV=1: temp >= mid */
-        else hi = mid;
-    }
-    thrm = 0; __asm__ __volatile__("mtspr 1019,%0; isync" : : "r"(thrm));   /* disable */
-    return (SInt16)(lo * 10);
-}
-
 /* ---------- backend detection (first match wins) ---------- */
 
 static TempBackend detect_backend(TempState *st)
@@ -283,7 +253,7 @@ static TempBackend detect_backend(TempState *st)
     UInt8 b, id;
     if (st->valid) {
         if (kw_read(st->base, st->shift, DS1775_ADDR, 0x00, &b, 1, st->chan) == 0)
-            return kBackendDS1775;
+            return kBackendDS1775;   /* haveADM is latched later, in ReadAll_MDD */
         if (kw_read(st->base, st->shift, MAX6642_ADDR, 0x01, &b, 1, st->chan) == 0)
             return kBackendMAX6642;
         if (kw_read(st->base, st->shift, ADT746X_ADDR, 0x26, &b, 1, st->chan) == 0) {
@@ -293,18 +263,7 @@ static TempBackend detect_backend(TempState *st)
             return kBackendADT7460;      /* 0x27, unknown, or ID read failed */
         }
     }
-    /* TAU fallback — ONLY on CPUs that actually implement the THRM SPRs (750,
-     * 7400). The 7410 / 745x / 744x family (e.g. the Mac Mini's 7447A) removed
-     * them, so `mfspr 1019` there is an illegal instruction that faults the whole
-     * Control Strip at load. Gate strictly by CPU type. */
-    {
-        long cpu = 0;
-        if (Gestalt(gestaltNativeCPUtype, &cpu) == noErr
-            && (cpu == gestaltCPU750 || cpu == gestaltCPUG4)
-            && tau_probe())
-            return kBackendTAU;
-    }
-    return kBackendNone;
+    return kBackendNone;   /* no readable sensor on this Mac */
 }
 
 /* ---------- per-backend reads (all populate cpuX10/haveCpu[/caseX10/haveCase]) ---------- */
@@ -320,8 +279,8 @@ static void ReadAll_MDD(TempState *st)
     if (kw_read(st->base, st->shift, ADM1030_ADDR, ADM_REG_TEMP, b, 1, st->chan) == 0) {
         st->caseX10 = (SInt16)((SInt16)(SInt8)b[0] * 10);
         st->haveCase = true;
+        st->haveADM  = true;   /* ADM1030 present -> label may name it (sticky) */
     } else st->haveCase = false;
-    st->tauApprox = false;
 }
 
 static void ReadAll_MAX6642(TempState *st)
@@ -335,7 +294,6 @@ static void ReadAll_MAX6642(TempState *st)
         st->caseX10 = (SInt16)((SInt16)b * 10);
         st->haveCase = true;
     } else st->haveCase = false;
-    st->tauApprox = false;
 }
 
 static void ReadAll_ADT(TempState *st)
@@ -349,15 +307,6 @@ static void ReadAll_ADT(TempState *st)
         st->caseX10 = (SInt16)((SInt16)(SInt8)b * 10);
         st->haveCase = true;
     } else st->haveCase = false;
-    st->tauApprox = false;
-}
-
-static void ReadAll_TAU(TempState *st)
-{
-    st->cpuX10   = tau_read_x10();
-    st->haveCpu  = true;
-    st->haveCase = false;      /* TAU is CPU-only */
-    st->tauApprox = true;
 }
 
 /* ---------- over-temp alert (backend-independent; monitors the CPU) ---------- */
@@ -383,13 +332,12 @@ static void CheckAlert(TempState *st)
 
 static void ReadAll(TempState *st)
 {
-    if (!st->valid && st->backend != kBackendTAU) return;
+    if (!st->valid) return;
     switch (st->backend) {
         case kBackendDS1775:  ReadAll_MDD(st);     break;
         case kBackendMAX6642: ReadAll_MAX6642(st); break;
         case kBackendADT7460:
         case kBackendADT7467: ReadAll_ADT(st);     break;
-        case kBackendTAU:     ReadAll_TAU(st);     break;
         default: break;
     }
     if (st->haveCpu) {
@@ -426,7 +374,6 @@ static void BuildLabel(TempState *st, StringPtr out)
     short n, i, o = 0;
     if (!st || st->backend == kBackendNone) { CtoP("n/a", out); return; }
     if (!HaveActive(st)) { CtoP("--", out); return; }
-    if (st->tauApprox) out[++o] = '~';
     NumToString(DisplayValue(st), num);
     n = num[0];
     for (i = 1; i <= n; i++) out[++o] = num[i];
@@ -444,12 +391,12 @@ static void SetupStripFont(GrafPtr port)
     TextFace(bold);
 }
 
-/* fixed cell width = widest reading; "~888<deg>F" only when a TAU (~) is shown */
+/* fixed cell width = widest reading ("888<deg>F") */
 static short FixedWidth(TempState *st, GrafPtr port)
 {
     Str255 s;
     short o = 0;
-    if (st && st->tauApprox) s[++o] = '~';
+    (void)st;
     s[++o] = '8'; s[++o] = '8'; s[++o] = '8'; s[++o] = 0xA1; s[++o] = 'F';
     s[0] = (unsigned char)o;
     SetupStripFont(port);
@@ -466,12 +413,12 @@ static void DrawArrow(short x, short y)
 static void backend_name(TempState *st, StringPtr out)
 {
     switch (st->backend) {
-        case kBackendDS1775:   CtoP("Sensor: DS1775 + ADM1030",     out); break;
+        case kBackendDS1775:   CtoP(st->haveADM ? "Sensor: DS1775 + ADM1030"
+                                                : "Sensor: DS1775",  out); break;
         case kBackendMAX6642:  CtoP("Sensor: MAX6642",              out); break;
         case kBackendADT7460:  CtoP("Sensor: ADT7460",              out); break;
         case kBackendADT7467:  CtoP("Sensor: ADT7467",              out); break;
-        case kBackendTAU:      CtoP("Sensor: TAU (\xB1" "12\xA1" "C)", out); break;
-        default:               CtoP("Sensor: none",                out); break;
+        default:               CtoP("Sensor: none found on this Mac", out); break;
     }
 }
 
@@ -539,7 +486,6 @@ pascal long ControlStripModule(long message, long params,
                 }
                 ns->valid   = find_i2c(ns);
                 ns->backend = detect_backend(ns);
-                if (ns->backend == kBackendTAU)  ns->valid = true;   /* TAU needs no I2C */
                 if (ns->backend == kBackendNone) ns->valid = false;  /* nothing to read  */
                 if (ns->valid) {
                     ReadAll(ns);
@@ -629,7 +575,6 @@ pascal long ControlStripModule(long message, long params,
                 if (st->haveCpu) {
                     APN(st->useF ? ((long)st->cpuX10 * 9 / 5 + 320 + 5) / 10 : (st->cpuX10 + 5) / 10);
                     buf[i++] = (char)0xA1; buf[i++] = st->useF ? 'F' : 'C';
-                    if (st->tauApprox) APP(" (TAU \xB1 12\xA1" "C)");
                 } else APP("--");
                 if (st->haveCase) {
                     APP("  Case ");
@@ -642,7 +587,7 @@ pascal long ControlStripModule(long message, long params,
                 #undef APP
                 #undef APN
             } else {
-                Str255 h; CtoP("CPU temperature monitor", h);
+                Str255 h; CtoP("No readable temperature sensor was found on this Mac.", h);
                 SBShowHelpString(statusRect, h);
             }
             return 0;

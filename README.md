@@ -14,14 +14,15 @@ disabled on the 7450/7455 family — so it can't read these machines at all. Thi
 the TAU and talks to the actual sensor chips Apple's own firmware uses, giving a real reading to
 **0.5 °C** where the TAU spec was only ±12 °C.
 
-Beyond the MDD it also **auto-detects other sensors**, and on older G3/G4s with no I²C sensor it
-falls back to the on-chip TAU (only where that chip actually has it). See *Supported machines*.
+Beyond the MDD it also **auto-detects other sensors** — and it has since been confirmed on a
+**PowerBook G4 Titanium**, which carries its own DS1775. See *Supported machines*.
 
-> **Status: working, seeking testers.** Verified on a dual-1.25 GHz MDD (PowerMac3,6) running
-> Mac OS 9.2.2. The other sensor backends are implemented from documented register maps but are
-> **not yet hardware-verified** — testing on other models is how we build confidence. The module
-> is **strictly read-only** on all sensors (see *Safety*), and if it finds no readable sensor it
-> simply shows `n/a` — it never hangs or crashes the Control Strip.
+> **Status: working, seeking testers.** Verified on a dual-1.25 GHz MDD (PowerMac3,6) and a
+> 667 MHz PowerBook G4 Titanium, both running Mac OS 9.2.2. The other sensor backends are
+> implemented from documented register maps but are **not yet hardware-verified** — testing on
+> other models is how we build confidence. The module is **strictly read-only** on all sensors
+> (see *Safety*), and if it finds no readable sensor it simply shows `n/a` — it never hangs or
+> crashes the Control Strip.
 
 ![The CPU Temp module in the Mac OS 9 Control Strip, showing the 47°C reading and its menu — with the auto-detected "Sensor: DS1775 + ADM1030" header at the top](docs/screenshot-menu.jpg)
 
@@ -36,8 +37,7 @@ falls back to the on-chip TAU (only where that chip actually has it). See *Suppo
 - **Over-temperature alert** — if the CPU exceeds the safe limit (≥ 85 °C) a Notification
   Manager alert pops up ("consider shutting down…"). It's latched (warns once per event, not in
   a loop) and keeps watching the CPU on every backend, even while you're viewing case temp.
-- **Fixed-width cell**, bold text, and a custom Control-Strip-style icon. TAU readings carry a
-  `~` prefix to flag their ±12 °C approximation.
+- **Fixed-width cell**, bold text, and a custom Control-Strip-style icon.
 
 Thresholds are conservative defaults (the 7455's junction limit is ~105 °C; the MDD idles around
 40–55 °C). They're `#define`s at the top of [`csm/cpu_temp_csm.c`](csm/cpu_temp_csm.c) if you
@@ -50,12 +50,12 @@ Sensor access under OS 9 depends entirely on *how* a machine exposes its sensor:
 **Verified**
 - **Power Mac G4 MDD / FW800 (PowerMac3,6)** — DS1775 (CPU) + ADM1030 (case) on the Uni-N I²C
   bus. The reference machine.
+- **PowerBook G4 Titanium (667 MHz)** — DS1775 (CPU) at `0x49` on the Uni-N I²C bus. No ADM1030,
+  so the label reads *Sensor: DS1775* and there is no case reading. (Contrary to common belief,
+  the Titanium does expose a real temperature sensor.)
 
 **Implemented, seeking testers** (auto-detected; built from documented register maps, not yet
 confirmed on hardware)
-- Older **G3 / first-gen G4 (750 / 7400)** with no I²C sensor → falls back to the on-chip **TAU**
-  (±12 °C). Attempted only on CPUs that actually have the TAU registers; newer chips are skipped
-  so they can't fault.
 - Any Uni-N/KeyWest G4 carrying a DS1775 / MAX6642 / ADT746x on a *memory-mapped* I²C bus.
 
 **Detected but NOT readable from OS 9**
@@ -132,10 +132,9 @@ it can be added; for now, correctness and safety win.
 Short version: find the Uni-N/KeyWest I²C controller in the Name Registry, memory-map its
 registers, and bit-bang the KeyWest I²C protocol (ported from the Linux `drivers/macintosh`
 sources) to read the sensor. At load a small probe picks the backend — DS1775, MAX6642, or
-ADT746x on the I²C bus, or the on-chip TAU as a last resort on 750/7400 CPUs. The full story —
-sensor topology, the KeyWest register interface, why the TAU route is a dead end on the 745x (and
-why it's CPU-gated so it can't fault a machine that lacks it), the Open Firmware recon, the
-fan-tachometer finding, and why the Mac Mini's PMU-side sensor is out of reach — is in
+ADT746x on the I²C bus. The full story — sensor topology, the KeyWest register interface, why the
+on-chip TAU is not an option under OS 9, the Open Firmware recon, the fan-tachometer finding, and
+why the Mac Mini's PMU-side sensor is out of reach — is in
 [TECHNICAL.md](TECHNICAL.md), with the on-machine Open Firmware capture in
 [`probe/OF-RECON.md`](probe/OF-RECON.md).
 

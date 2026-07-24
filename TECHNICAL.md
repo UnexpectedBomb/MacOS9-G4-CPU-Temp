@@ -6,11 +6,20 @@ and why it works where the older approach doesn't.
 ## Why not the on-chip TAU?
 
 The PowerPC 744x/745x ("G4") has a Thermal Assist Unit — an on-die thermal sensor read through
-special-purpose registers. It's what *Jeremy's CSM Bundle* temperature module uses. But
-Motorola's errata disabled/deprecated the TAU on the MPC7450/7451/7455 family (the MDD's CPU),
-and where it does respond it is wildly inaccurate (Motorola documents ±12 °C; in practice it
-reads far low). So the TAU is a dead end on these machines. We read the board's dedicated
-sensors instead.
+special-purpose registers (THRM1/2/3). It's what *Jeremy's CSM Bundle* temperature module uses.
+There are two independent reasons it is not an option here:
+
+1. **It can't be read from a Control Strip module at all.** THRM1/2/3 (and ICTC) are *privileged*
+   SPRs, and Mac OS 9 runs application / Control-Strip code in **user mode** (problem state). Any
+   `mfspr`/`mtspr` to them raises a privilege violation (System Error type 7) that takes the whole
+   Control Strip down. Reading the TAU would require a native driver running in supervisor mode,
+   not an `sdev`.
+2. **Even if it could, it's a dead end on these Macs.** Motorola disabled/deprecated the TAU on
+   the MPC7450/7451/7455 family (the MDD's CPU), and where it does respond it is wildly inaccurate
+   (±12 °C on paper, far low in practice).
+
+So we read the board's dedicated I²C sensors instead. (Earlier builds carried a gated TAU
+fallback; it was removed once the user-mode fault above was confirmed on a Titanium PowerBook.)
 
 ## Sensor topology
 
@@ -121,23 +130,26 @@ phase, which is the normal "not fitted" result, not an error):
 | 1 | DS1775 (+ ADM1030 case) | `0x49` / `0x2c` | reg 0 (2 bytes, 8.8) / reg `0x0A` (1 byte) |
 | 2 | MAX6642 | `0x4A`* | remote (CPU) reg `0x01`, local reg `0x00`, 1 °C/LSB |
 | 3 | ADT7460 / ADT7467 | `0x2E` | remote1 (CPU) `0x25`, local `0x26`; part from ID reg `0x3D` |
-| 4 | on-chip **TAU** | — | THRM1 SPR (1019) binary search, ±12 °C |
-| 5 | none | — | display `n/a` |
+| 4 | none | — | display `n/a` |
 
-All backends are **read-only**; the alert + peak tracking run in the shared read path so they
-work regardless of backend. Only the DS1775 path is hardware-verified; the others are ported
-from documented register maps (Linux `drivers/hwmon/adm1031.c`, `drivers/macintosh/therm_adt746x.c`,
-the MAX6642 datasheet) and await testers.
+The DS1775 path also probes for an ADM1030 (case sensor); if none answers (e.g. the Titanium
+PowerBook, which has the DS1775 but no ADM1030) the label drops the `+ ADM1030` and the Case
+item is disabled. All backends are **read-only**; the alert + peak tracking run in the shared read
+path so they work regardless of backend. The DS1775 path is hardware-verified (MDD and a Titanium
+PowerBook); the MAX6642 and ADT paths are ported from documented register maps (Linux
+`drivers/hwmon/adm1031.c`, `drivers/macintosh/therm_adt746x.c`, the MAX6642 datasheet) and await
+testers.
 
-### TAU is CPU-gated (or it crashes the Control Strip)
+### There is no on-chip TAU backend
 
-The TAU fallback executes `mfspr/mtspr` on SPR 1019 (THRM1). **Those SPRs were removed on the
-7410 / 745x / 744x family** (e.g. the Mac Mini's 7447A) — accessing them is an *illegal
-instruction* that faults inside `sdevInitModule` and takes the whole Control Strip down
-("installed but not active / could not be started up"). So the TAU probe is gated behind
-`Gestalt(gestaltNativeCPUtype)` and only runs on `gestaltCPU750` (0x0108) and `gestaltCPUG4`
-(0x010C, the 7400) — exactly the CPUs that have working TAU. Everything newer skips it and lands
-on `n/a`. (Learned the hard way: an unguarded optional SPR access is fatal to the whole strip.)
+An earlier version had a TAU fallback. It was removed: reading the THRM SPRs needs a *privileged*
+instruction, and OS 9 runs Control-Strip code in **user mode**, so `mfspr/mtspr` on THRM1 raises a
+privilege violation (System Error type 7) that crashes the whole Control Strip — on *any* CPU, not
+just the 745x that lack the registers. (This was mis-diagnosed at first as an illegal-instruction
+fault gated by CPU type; a Titanium PowerBook test showed it faults regardless, because the fault
+is the privilege level, not the opcode.) Reading the TAU would require a supervisor-mode driver,
+and it is inaccurate anyway (see the top of this document), so the board's I²C sensors are used
+exclusively.
 
 ## Why the Mac Mini G4 is out of reach from OS 9
 
