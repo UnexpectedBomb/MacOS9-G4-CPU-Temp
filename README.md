@@ -45,28 +45,41 @@ want to change them.
 
 ## Supported machines
 
-Sensor access under OS 9 depends entirely on *how* a machine exposes its sensor:
+Sensor access under OS 9 depends entirely on *how* a machine exposes its sensor. The list below
+grows as people report results — **if you run the module on a model that isn't listed, please
+[open an issue](../../issues) or post on the [macos9lives.com thread](https://macos9lives.com/smforum/index.php?topic=7837.0)
+with the result** (a run of `CPUTempProbe` / the TiBook probe is ideal) and it will be added.
 
-**Verified**
-- **Power Mac G4 MDD / FW800 (PowerMac3,6)** — DS1775 (CPU) + ADM1030 (case) on the Uni-N I²C
-  bus. The reference machine.
-- **PowerBook G4 Titanium (667 MHz)** — DS1775 (CPU) at `0x49` on the Uni-N I²C bus. No ADM1030,
-  so the label reads *Sensor: DS1775* and there is no case reading. (Contrary to common belief,
-  the Titanium does expose a real temperature sensor.)
+### ✅ Confirmed working on hardware
 
-**Implemented, seeking testers** (auto-detected; built from documented register maps, not yet
-confirmed on hardware)
-- Any Uni-N/KeyWest G4 carrying a DS1775 / MAX6642 / ADT746x on a *memory-mapped* I²C bus.
+| Model | Model ID | CPU | Sensor(s) detected | Readings |
+|-------|----------|-----|--------------------|----------|
+| Power Mac G4 "Mirrored Drive Doors" / FW800 | PowerMac3,6 | 7455 | DS1775 (CPU) + ADM1030 (case), Uni-N I²C | CPU + case |
+| PowerBook G4 Titanium, 667 MHz | PowerBook3,2 / 3,4 | 7450 / 7455 | DS1775 (CPU) at `0x49`, Uni-N I²C (no ADM1030) | CPU |
 
-**Detected but NOT readable from OS 9**
-- **Mac Mini G4 — and likely the iBook G4 / aluminum PowerBook G4.** These *have* a real sensor
-  (the Mini uses a **MAX6642**), but it lives on the **PMU's** private I²C bus, not a
-  memory-mapped one. Reading it means sending i2c-over-PMU commands, and **classic Mac OS exposes
-  no way to do that** on these New-World machines. The module safely shows `n/a`; read the
-  temperature another way (below).
+The Titanium result is notable: the Titanium PowerBooks are widely believed to expose *no*
+OS-readable temperature sensor (even Mac OS X's Temperature Monitor shows none), but they do carry
+a DS1775 on the Uni-N bus.
 
-Not sure what your machine has? Run **`CPUTempProbe`** (see [`probe/`](probe/)) — it prints the
-device-tree sensor nodes, the I²C controllers and their children, and attempts a read.
+### ⏳ Implemented, seeking testers
+
+Auto-detected from documented register maps, not yet confirmed on hardware:
+
+- Any Uni-N / KeyWest G4 carrying a **DS1775 / MAX6642 / ADT746x** on a *memory-mapped* I²C bus
+  (this likely includes several other G4 desktops and the iBook G4 / aluminum PowerBook G4, if
+  their sensor is memory-mapped rather than PMU-side).
+
+### ❌ Detected but NOT readable from OS 9
+
+- **Mac Mini G4 (PowerMac10,1).** It *has* a **MAX6642**, but the sensor lives on the **PMU's**
+  private I²C bus, not a memory-mapped one. Reading it means sending i2c-over-PMU commands, and
+  classic Mac OS exposes no way to do that on these New-World machines. Confirmed dead-end (the
+  `GetCoreProcessorTemperature` OS call also returns "can't report" here). The module safely shows
+  `n/a`; read the temperature another way (below).
+
+Not sure what your machine has? Run **`CPUTempProbe`** (see [`probe/`](probe/)), or on a PowerBook
+the [TiBook probe](probe/tibook/) — they print the device-tree sensor nodes, the I²C controllers
+and their children, and attempt a read.
 
 ### Reading temperature on the Mac Mini G4 (and other PMU-sensor machines)
 
