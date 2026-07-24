@@ -55,7 +55,7 @@ with the result** (a run of `CPUTempProbe` / the TiBook probe is ideal) and it w
 | Model | Model ID | CPU | Sensor(s) detected | Readings |
 |-------|----------|-----|--------------------|----------|
 | Power Mac G4 "Mirrored Drive Doors" / FW800 | PowerMac3,6 | 7455 | DS1775 (CPU) + ADM1030 (case), Uni-N I²C | CPU + case |
-| PowerBook G4 Titanium, 667 MHz | PowerBook3,2 / 3,4 | 7450 / 7455 | DS1775 (CPU) at `0x49`, Uni-N I²C (no ADM1030) | CPU |
+| PowerBook G4 Titanium, 667 MHz "DVI" | PowerBook3,4 | 7455 | DS1775 (CPU) at `0x49`, Uni-N I²C (no ADM1030) | CPU |
 
 The Titanium result is notable: the Titanium PowerBooks are widely believed to expose *no*
 OS-readable temperature sensor (even Mac OS X's Temperature Monitor shows none), but they do carry
