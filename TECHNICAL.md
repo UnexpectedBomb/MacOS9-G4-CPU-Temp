@@ -132,12 +132,17 @@ phase, which is the normal "not fitted" result, not an error):
 | 3 | ADT7460 / ADT7467 | `0x2E` | remote1 (CPU) `0x25`, local `0x26`; part from ID reg `0x3D` |
 | 4 | none | — | display `n/a` |
 
-The DS1775 path also probes for an ADM1030 (case sensor); if none answers (e.g. the Titanium
-PowerBook, which has the DS1775 but no ADM1030) the label drops the `+ ADM1030` and the Case
-item is disabled. All backends are **read-only**; the alert + peak tracking run in the shared read
-path so they work regardless of backend. The DS1775 path is hardware-verified (MDD and a Titanium
-PowerBook); the MAX6642 and ADT paths are ported from documented register maps (Linux
-`drivers/hwmon/adm1031.c`, `drivers/macintosh/therm_adt746x.c`, the MAX6642 datasheet) and await
+The DS1775 path resolves its second ("case") reading lazily, one probe per tick, so a NAK is never
+immediately followed by another i2c transaction (that back-to-back pattern wedged an early build
+of the KeyWest engine). It first looks for an **ADM1030** case sensor on channel 0 (the MDD /
+FW800); if none answers it tries a **second DS1775 on channel 1** (the 667 DVI Titanium carries one
+there, reading ~41 °C, surfaced as the Case reading); if neither is present the label reads plain
+*Sensor: DS1775* and the Case item is disabled. Once resolved, steady state issues no NAKs at all.
+All backends are **read-only**; the alert + peak tracking run in the shared read path so they work
+regardless of backend. The DS1775 path is hardware-verified (MDD, and both the case-via-ADM1030 and
+case-via-channel-1-DS1775 variants on a 667 DVI Titanium); the MAX6642 and ADT paths are ported
+from documented register maps (Linux `drivers/hwmon/adm1031.c`,
+`drivers/macintosh/therm_adt746x.c`, the MAX6642 datasheet) and await
 testers.
 
 ### There is no on-chip TAU backend

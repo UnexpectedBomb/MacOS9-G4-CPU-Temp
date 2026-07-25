@@ -55,11 +55,13 @@ with the result** (a run of `CPUTempProbe` / the TiBook probe is ideal) and it w
 | Model | Model ID | CPU | Sensor(s) detected | Readings |
 |-------|----------|-----|--------------------|----------|
 | Power Mac G4 "Mirrored Drive Doors" / FW800 | PowerMac3,6 | 7455 | DS1775 (CPU) + ADM1030 (case), Uni-N I²C | CPU + case |
-| PowerBook G4 Titanium, 667 MHz "DVI" | PowerBook3,4 | 7455 | DS1775 (CPU) at `0x49`, Uni-N I²C (no ADM1030) | CPU |
+| PowerBook G4 Titanium, 667 MHz "DVI" | PowerBook3,4 | 7455 | Two DS1775 at `0x49` (ch 0 + ch 1), Uni-N I²C; no ADM1030 | CPU + a 2nd sensor |
 
 The Titanium result is notable: the Titanium PowerBooks are widely believed to expose *no*
-OS-readable temperature sensor (even Mac OS X's Temperature Monitor shows none), but they do carry
-a DS1775 on the Uni-N bus.
+OS-readable temperature sensor (even Mac OS X's Temperature Monitor shows none), but the 667 DVI
+carries **two** DS1775 sensors on the Uni-N bus — one per I²C channel. The module shows the
+channel-0 sensor as the CPU and the channel-1 sensor as the "Case" reading (its exact location on
+the board is unconfirmed). Note this varies within the line: see the 1 GHz below.
 
 ### ⏳ Implemented, seeking testers
 
@@ -76,6 +78,12 @@ Auto-detected from documented register maps, not yet confirmed on hardware:
   classic Mac OS exposes no way to do that on these New-World machines. Confirmed dead-end (the
   `GetCoreProcessorTemperature` OS call also returns "can't report" here). The module safely shows
   `n/a`; read the temperature another way (below).
+- **PowerBook G4 Titanium, 1 GHz (PowerBook3,5).** Unlike the 667 DVI, this model (the first
+  Titanium with an active fan) has **no I²C temperature sensor** on the Uni-N bus (a community
+  probe found zero sensors on both KeyWest controllers). Cooling is handled by an on-board
+  **Cypress PSoC** fan controller (a `fan` node of type `Psoc` in the device tree) that senses
+  temperature internally and never exposes it as a readable sensor. The module shows `n/a`; use
+  Open Firmware or Mac OS X.
 
 Not sure what your machine has? Run **`CPUTempProbe`** (see [`probe/`](probe/)), or on a PowerBook
 the [TiBook probe](probe/tibook/) — they print the device-tree sensor nodes, the I²C controllers

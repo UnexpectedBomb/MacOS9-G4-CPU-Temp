@@ -114,12 +114,23 @@ typedef enum {
     kBackendADT7467 = 4
 } TempBackend;
 
+/* Where the DS1775 backend gets its second ("case") reading. Resolved lazily,
+ * one probe per tick, so a NAK is never immediately followed by another i2c
+ * transaction (that back-to-back pattern is what broke the KeyWest bus in v1.1). */
+typedef enum {
+    kCaseUnknown   = 0,   /* not yet probed (memset default) */
+    kCaseTryCh1    = 1,   /* ADM1030 absent; try a 2nd DS1775 on channel 1 next tick */
+    kCaseADM       = 2,   /* ADM1030 at 0x2c, channel 0 (MDD / FW800) */
+    kCaseDS1775Ch1 = 3,   /* a 2nd DS1775 at 0x49, channel 1 (PowerBook G4 Titanium) */
+    kCaseNone      = 4    /* no second sensor on this machine */
+} CaseSource;
+
 typedef struct {
     volatile UInt8 *base;
     int    shift, chan;
     Boolean valid;
     TempBackend backend;
-    Boolean haveADM;           /* DS1775 backend: an ADM1030 was also detected */
+    int    caseSource;         /* CaseSource: how the DS1775 backend finds a 2nd reading */
     int    dispMode;           /* M_CPU / M_CASE */
     Boolean useF;
     Boolean alerted;
@@ -268,19 +279,66 @@ static TempBackend detect_backend(TempState *st)
 
 /* ---------- per-backend reads (all populate cpuX10/haveCpu[/caseX10/haveCase]) ---------- */
 
+/* Decode a DS1775 2-byte temperature register (reg 0) into tenths of deg C. */
+static SInt16 ds1775_x10(const UInt8 *b)
+{
+    SInt16 raw = (SInt16)(((UInt16)b[0] << 8) | b[1]);
+    return (SInt16)(((long)raw * 10) / 256);
+}
+
 static void ReadAll_MDD(TempState *st)
 {
     UInt8 b[2];
+
+    /* CPU: DS1775 at 0x49, channel 0. ALWAYS first in the tick, so it is never
+     * immediately preceded by a NAK'd probe (which is what wedged v1.1). */
     if (kw_read(st->base, st->shift, DS1775_ADDR, 0x00, b, 2, st->chan) == 0) {
-        SInt16 raw = (SInt16)(((UInt16)b[0] << 8) | b[1]);
-        st->cpuX10 = (SInt16)(((long)raw * 10) / 256);
+        st->cpuX10  = ds1775_x10(b);
         st->haveCpu = true;
     }
-    if (kw_read(st->base, st->shift, ADM1030_ADDR, ADM_REG_TEMP, b, 1, st->chan) == 0) {
-        st->caseX10 = (SInt16)((SInt16)(SInt8)b[0] * 10);
-        st->haveCase = true;
-        st->haveADM  = true;   /* ADM1030 present -> label may name it (sticky) */
-    } else st->haveCase = false;
+
+    /* Case / second reading. Resolve the source one probe per tick (never two
+     * i2c transactions after a NAK within a tick), then read only that source in
+     * steady state (no NAKs at all once resolved):
+     *   - MDD / FW800: an ADM1030 on channel 0.
+     *   - PowerBook G4 Titanium: a second DS1775 at 0x49 on channel 1.        */
+    switch (st->caseSource) {
+        case kCaseUnknown:                       /* tick: probe ADM1030 only */
+            if (kw_read(st->base, st->shift, ADM1030_ADDR, ADM_REG_TEMP, b, 1, st->chan) == 0) {
+                st->caseX10 = (SInt16)((SInt16)(SInt8)b[0] * 10);
+                st->haveCase = true;
+                st->caseSource = kCaseADM;
+            } else {                             /* absent -> try ch1 NEXT tick (gap after NAK) */
+                st->haveCase = false;
+                st->caseSource = kCaseTryCh1;
+            }
+            break;
+        case kCaseTryCh1:                        /* a 2nd DS1775 on channel 1? */
+            if (kw_read(st->base, st->shift, DS1775_ADDR, 0x00, b, 2, 1) == 0) {
+                st->caseX10 = ds1775_x10(b);
+                st->haveCase = true;
+                st->caseSource = kCaseDS1775Ch1;
+            } else {
+                st->haveCase = false;
+                st->caseSource = kCaseNone;
+            }
+            break;
+        case kCaseADM:
+            if (kw_read(st->base, st->shift, ADM1030_ADDR, ADM_REG_TEMP, b, 1, st->chan) == 0) {
+                st->caseX10 = (SInt16)((SInt16)(SInt8)b[0] * 10);
+                st->haveCase = true;
+            } else st->haveCase = false;
+            break;
+        case kCaseDS1775Ch1:
+            if (kw_read(st->base, st->shift, DS1775_ADDR, 0x00, b, 2, 1) == 0) {
+                st->caseX10 = ds1775_x10(b);
+                st->haveCase = true;
+            } else st->haveCase = false;
+            break;
+        default:                                 /* kCaseNone */
+            st->haveCase = false;
+            break;
+    }
 }
 
 static void ReadAll_MAX6642(TempState *st)
@@ -413,8 +471,11 @@ static void DrawArrow(short x, short y)
 static void backend_name(TempState *st, StringPtr out)
 {
     switch (st->backend) {
-        case kBackendDS1775:   CtoP(st->haveADM ? "Sensor: DS1775 + ADM1030"
-                                                : "Sensor: DS1775",  out); break;
+        case kBackendDS1775:
+            if (st->caseSource == kCaseADM)            CtoP("Sensor: DS1775 + ADM1030", out);
+            else if (st->caseSource == kCaseDS1775Ch1) CtoP("Sensor: DS1775 x2",        out);
+            else                                       CtoP("Sensor: DS1775",           out);
+            break;
         case kBackendMAX6642:  CtoP("Sensor: MAX6642",              out); break;
         case kBackendADT7460:  CtoP("Sensor: ADT7460",              out); break;
         case kBackendADT7467:  CtoP("Sensor: ADT7467",              out); break;
