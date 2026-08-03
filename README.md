@@ -30,6 +30,8 @@ Beyond the MDD it also **auto-detects other sensors** — and it has since been 
 
 - **Auto-detects the sensor** at load and shows which one it found — an italic, informational
   line at the top of the menu (e.g. *Sensor: DS1775 + ADM1030*), in the style of the AirPort CSM.
+- **Live reading** — the temperature refreshes on its own every couple of seconds, no clicking
+  needed (the cell repaints itself in place as the value changes).
 - **CPU temperature** — plus **case/board temperature** where the machine has a second channel.
 - **Click for a menu** — pick the reading (CPU / Case) and the units (°F / °C) as two
   independent groups; units apply to both.

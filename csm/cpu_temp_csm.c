@@ -141,6 +141,10 @@ typedef struct {
     Boolean shownRed;
     int    shownMode;
     UInt32 lastRead;
+    GrafPtr cachePort;         /* strip port + our cell rect, cached from the last  */
+    Rect    cacheRect;         /* sdevDrawStatus, so the periodic tickle can repaint */
+    Boolean haveCache;         /* itself in place (the strip issues no redraw on its */
+                               /* own for a fixed-width module whose value changes).  */
     NMRec  nm;
     Str255 nmMsg;
 } TempState;
@@ -522,6 +526,40 @@ static void DoMenu(TempState *st, const Rect *cell)
     st->shownVal = -30000;
 }
 
+/* Draw the reading + arrow into rect `r` of the CURRENT port. `erase` TRUE when
+ * we are repainting ourselves during the periodic tickle (the strip has not
+ * cleared the cell for us, unlike a normal sdevDrawStatus); FALSE for the strip-
+ * driven draw, where the cell is already clean. */
+static void DrawCell(TempState *st, const Rect *r, Boolean erase)
+{
+    Str255 s;
+    RGBColor save, c, blk;
+    FontInfo fi;
+    short cellW, cellH, textW, total, x, baseline;
+    SetupStripFont(NULL);                    /* port is already set by the caller */
+    BuildLabel(st, s);
+    GetFontInfo(&fi);
+    cellW = r->right - r->left;
+    cellH = r->bottom - r->top;
+    textW = StringWidth(s);
+    total = textW + 2 + kArrowW;
+    x = r->left + (cellW - total) / 2;
+    baseline = r->top + (cellH - (fi.ascent + fi.descent)) / 2 + fi.ascent;
+
+    if (erase) EraseRect(r);                  /* clear our own cell before repaint */
+
+    GetForeColor(&save);
+    blk.red = blk.green = blk.blue = 0;
+    if (DisplayRed(st)) { c.red = 0xFFFF; c.green = 0; c.blue = 0; RGBForeColor(&c); }
+    else RGBForeColor(&blk);
+    MoveTo(x, baseline);
+    DrawString(s);
+
+    RGBForeColor(&blk);
+    DrawArrow(x + textW + 2, r->top + (cellH - 3) / 2);
+    RGBForeColor(&save);
+}
+
 /* ---------- Control Strip entry point ---------- */
 
 pascal long ControlStripModule(long message, long params,
@@ -567,53 +605,51 @@ pascal long ControlStripModule(long message, long params,
             return FixedWidth(st, statusPort);
 
         case sdevPeriodicTickle:
+            /* The Control Strip only repaints a module when its width changes
+             * (via sdevResizeDisplay) or when it is externally invalidated. This
+             * module's width is fixed, so relying on the resize return left the
+             * reading frozen until the user prodded it (reported on the forum).
+             * Instead we repaint OURSELVES here, in place, whenever the displayed
+             * value changes, using the port/rect cached from the last real draw. */
             if (st != NULL && st->valid) {
                 UInt32 now = TickCount();
                 if ((now - st->lastRead) >= READ_TICKS) {
+                    SInt16 nv; Boolean nr; int nm;
                     st->lastRead = now;
                     ReadAll(st);
-                    /* Always redraw on the read cadence: eliminates the "looks
-                     * frozen when the temperature is stable" confusion AND repaints
-                     * after external invalidation (sleep/wake, depth change). The
-                     * sensor read is throttled to READ_TICKS, so cost is negligible.
-                     * shownVal/shownRed/shownMode are still kept current for other
-                     * paths. */
-                    st->shownVal = (SInt16)DisplayValue(st);
-                    st->shownRed = DisplayRed(st);
-                    st->shownMode = st->dispMode;
-                    return (1L << sdevResizeDisplay);
+                    nv = (SInt16)DisplayValue(st);
+                    nr = DisplayRed(st);
+                    nm = st->dispMode;
+                    if (st->haveCache && st->cachePort != NULL
+                        && (nv != st->shownVal || nr != st->shownRed || nm != st->shownMode)
+                        && SBIsControlStripVisible()) {
+                        GrafPtr savePort;
+                        GetPort(&savePort);
+                        SetPort(st->cachePort);
+                        DrawCell(st, &st->cacheRect, true);   /* erase + repaint in place */
+                        SetPort(savePort);
+                    }
+                    st->shownVal = nv;
+                    st->shownRed = nr;
+                    st->shownMode = nm;
                 }
             }
             return 0;
 
-        case sdevDrawStatus: {
-            Str255 s;
-            RGBColor save, c, blk;
-            FontInfo fi;
-            short cellW, cellH, textW, total, x, baseline;
+        case sdevDrawStatus:
             if (statusPort != NULL) SetPort(statusPort);
-            SetupStripFont(statusPort);
-            BuildLabel(st, s);
-            GetFontInfo(&fi);
-            cellW = statusRect->right - statusRect->left;
-            cellH = statusRect->bottom - statusRect->top;
-            textW = StringWidth(s);
-            total = textW + 2 + kArrowW;
-            x = statusRect->left + (cellW - total) / 2;
-            baseline = statusRect->top + (cellH - (fi.ascent + fi.descent)) / 2 + fi.ascent;
-
-            GetForeColor(&save);
-            blk.red = blk.green = blk.blue = 0;
-            if (DisplayRed(st)) { c.red = 0xFFFF; c.green = 0; c.blue = 0; RGBForeColor(&c); }
-            else RGBForeColor(&blk);
-            MoveTo(x, baseline);
-            DrawString(s);
-
-            RGBForeColor(&blk);
-            DrawArrow(x + textW + 2, statusRect->top + (cellH - 3) / 2);
-            RGBForeColor(&save);
+            if (st != NULL && statusRect != NULL && statusPort != NULL) {
+                st->cachePort = statusPort;   /* remember where/how to self-repaint */
+                st->cacheRect = *statusRect;  /* during the periodic tickle          */
+                st->haveCache = true;
+                /* keep the change-tracking current so the next tickle does not
+                 * repaint needlessly right after this strip-driven draw */
+                st->shownVal  = (SInt16)DisplayValue(st);
+                st->shownRed  = DisplayRed(st);
+                st->shownMode = st->dispMode;
+            }
+            DrawCell(st, statusRect, false);  /* strip already cleared the cell */
             return 0;
-        }
 
         case sdevMouseClick:
             if (st != NULL) DoMenu(st, statusRect);
