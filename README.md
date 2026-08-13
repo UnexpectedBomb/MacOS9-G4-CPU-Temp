@@ -34,7 +34,8 @@ Beyond the MDD it also **auto-detects other sensors** — and it has since been 
   needed (the cell repaints itself in place as the value changes).
 - **CPU temperature** — plus **case/board temperature** where the machine has a second channel.
 - **Click for a menu** — pick the reading (CPU / Case) and the units (°F / °C) as two
-  independent groups; units apply to both.
+  independent groups; units apply to both. The menu opens on mouse-down, like other modules.
+- **Remembers your settings** — the °C/°F and CPU/Case choices persist across restarts.
 - **Turns red** near the safe limit (CPU ≥ 75 °C; the case channel has its own threshold).
 - **Over-temperature alert** — if the CPU exceeds the safe limit (≥ 85 °C) a Notification
   Manager alert pops up ("consider shutting down…"). It's latched (warns once per event, not in

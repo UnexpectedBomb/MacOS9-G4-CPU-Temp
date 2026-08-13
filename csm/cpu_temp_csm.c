@@ -42,6 +42,7 @@
 #include <Fonts.h>
 #include <Menus.h>
 #include <Gestalt.h>
+#include <MacMemory.h>
 #include <MacTypes.h>
 #include <string.h>
 
@@ -487,6 +488,35 @@ static void backend_name(TempState *st, StringPtr out)
     }
 }
 
+/* ---------- persistent settings (survives reboot) ----------
+ * The Control Strip's own save-settings value is only kept for the session, so
+ * C/F and CPU/Case choices were lost on restart. SBLoad/SavePreferences write a
+ * tiny resource to the module's preferences file, which persists. Byte 0 = useF,
+ * byte 1 = dispMode. */
+
+static void LoadPrefs(TempState *st)
+{
+    Handle h = NULL;
+    if (SBLoadPreferences("\pCPU Temp Settings", &h) == noErr
+        && h != NULL && GetHandleSize(h) >= 2) {
+        st->useF     = (Boolean)((*h)[0] & 1);
+        st->dispMode = (int)((*h)[1] & 3);
+        if (st->dispMode > M_MAX) st->dispMode = M_CPU;
+    }
+    if (h != NULL) DisposeHandle(h);
+}
+
+static void SavePrefs(TempState *st)
+{
+    Handle h = NewHandle(2);
+    if (h != NULL) {
+        (*h)[0] = (char)(st->useF ? 1 : 0);
+        (*h)[1] = (char)(st->dispMode & 3);
+        SBSavePreferences("\pCPU Temp Settings", h);
+        DisposeHandle(h);
+    }
+}
+
 /* ---------- selection popup ---------- */
 
 static void DoMenu(TempState *st, const Rect *cell)
@@ -523,6 +553,7 @@ static void DoMenu(TempState *st, const Rect *cell)
         case kIt_Cels: st->useF = false;      break;
         default: return;
     }
+    SavePrefs(st);          /* write immediately so a reboot keeps the choice */
     st->shownVal = -30000;
 }
 
@@ -583,6 +614,7 @@ pascal long ControlStripModule(long message, long params,
                     ns->dispMode = (int)((params >> 1) & 3);
                     if (ns->dispMode > M_MAX) ns->dispMode = M_CPU;
                 }
+                LoadPrefs(ns);   /* persistent prefs win over the in-session value */
                 ns->valid   = find_i2c(ns);
                 ns->backend = detect_backend(ns);
                 if (ns->backend == kBackendNone) ns->valid = false;  /* nothing to read  */
@@ -595,11 +627,18 @@ pascal long ControlStripModule(long message, long params,
         }
 
         case sdevCloseModule:
-            if (st != NULL) DisposePtr((Ptr)st);
+            if (st != NULL) {
+                if (st->alerted) NMRemove(&st->nm);   /* drop any pending over-temp alert */
+                DisposePtr((Ptr)st);
+            }
             return 0;
 
         case sdevFeatures:
-            return (1L << sdevWantMouseClicks) | (1L << sdevHasCustomHelp);
+            /* sdevDontAutoTrack: take over tracking so the menu opens on mouse-DOWN
+             * (and tracks while held), matching every other Control Strip module.
+             * Without it the strip auto-tracks and only calls us on mouse-up. */
+            return (1L << sdevWantMouseClicks) | (1L << sdevDontAutoTrack)
+                 | (1L << sdevHasCustomHelp);
 
         case sdevGetDisplayWidth:
             return FixedWidth(st, statusPort);
@@ -656,8 +695,10 @@ pascal long ControlStripModule(long message, long params,
             return (1L << sdevResizeDisplay) | (1L << sdevNeedToSave);
 
         case sdevSaveSettings:
-            if (st != NULL)
+            if (st != NULL) {
+                SavePrefs(st);   /* persist to disk (in addition to the session value) */
                 return kSettingsMagic | ((long)(st->dispMode & 3) << 1) | (st->useF ? 1L : 0L);
+            }
             return 0;
 
         case sdevShowBalloonHelp:

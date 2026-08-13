@@ -22,6 +22,26 @@ resource 'sdev' (128, "CPU Temp", locked) {
     $$Read("CPUTempCSM.pef")
 };
 
+/* Version resource so Get Info shows a version string. Bytes: major (BCD),
+ * minor+bugfix (BCD), release stage (0x80 = final), non-release rev, region (0 =
+ * US), short version pstring, long "get info" pstring. */
+type 'vers' {
+    hex byte;                        /* major (BCD)            */
+    hex byte;                        /* minor + bugfix (BCD)   */
+    hex byte;                        /* release stage          */
+    hex byte;                        /* non-release revision   */
+    integer;                         /* region code            */
+    pstring;                         /* short version          */
+    pstring;                         /* long (Get Info) string */
+};
+
+resource 'vers' (1) {
+    0x01, 0x50, 0x80, 0x00,
+    0,
+    "1.5",
+    "1.5, github.com/UnexpectedBomb"
+};
+
 /* Thermometer Finder icon family (ICN#/icl8/ics#/ics8 at -16455). The file's
  * kHasCustomIcon flag is set post-Rez by scripts/set-custom-icon.py. */
 #include "therm_icon.r"
