@@ -41,6 +41,9 @@ Beyond the MDD it also **auto-detects other sensors** — and it has since been 
   Manager alert pops up ("consider shutting down…"). It's latched (warns once per event, not in
   a loop) and keeps watching the CPU on every backend, even while you're viewing case temp.
 - **Fixed-width cell**, bold text, and a custom Control-Strip-style icon.
+- **Behaves like a stock module** — it's built as a native PowerPC code fragment, so it shows a
+  version in Get Info and you can option-drag a copy of it out of the Control Strip, just like the
+  built-in modules.
 
 Thresholds are conservative defaults (the 7455's junction limit is ~105 °C; the MDD idles around
 40–55 °C). They're `#define`s at the top of [`csm/cpu_temp_csm.c`](csm/cpu_temp_csm.c) if you

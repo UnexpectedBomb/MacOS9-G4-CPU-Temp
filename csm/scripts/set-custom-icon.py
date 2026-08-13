@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-set-custom-icon.py -- turn on the Finder kHasCustomIcon flag for a built file.
+set-custom-icon.py -- turn on the Finder flags a built Control Strip module needs.
 
 Rez stamps the output's Finder type/creator but has no option for Finder
-flags, so a freshly Rez'd file has fdFlags = 0 and the Finder ignores the
-icon family we baked into its resource fork.  This patcher sets bit 0x0400
-(kHasCustomIcon) so the custom icon at resource ID -16455 actually shows.
+flags, so a freshly Rez'd file has fdFlags = 0.  This patcher sets:
+  * 0x0400 (kHasCustomIcon) so the custom icon at resource ID -16455 shows; and
+  * 0x2000 (kHasBundle)     so the Finder reads the file's BNDL/FREF -- which is
+                            what lets the Control Strip DRAG A COPY of the module
+                            out of the strip (stock modules all have this bit).
 
 It works on BOTH artifact formats because each lays the Finder type+creator
 immediately before the Finder flags:
@@ -24,7 +26,7 @@ Idempotent: re-running just re-asserts the bit.
 import sys
 from pathlib import Path
 
-HAS_CUSTOM_ICON_HI = 0x04   # high byte of kHasCustomIcon (0x0400)
+FLAGS_HI = 0x24   # high byte of kHasBundle (0x2000) | kHasCustomIcon (0x0400)
 
 
 def patch(path: Path, sig: bytes) -> None:
@@ -35,10 +37,10 @@ def patch(path: Path, sig: bytes) -> None:
     i = data.index(sig)
     flags_hi = i + len(sig)          # +8: high byte of fdFlags
     before = data[flags_hi]
-    data[flags_hi] |= HAS_CUSTOM_ICON_HI
+    data[flags_hi] |= FLAGS_HI
     path.write_bytes(data)
     print(f"{path.name}: fdFlags hi 0x{before:02X} -> 0x{data[flags_hi]:02X} "
-          f"(kHasCustomIcon set) at offset {flags_hi}")
+          f"(kHasBundle | kHasCustomIcon) at offset {flags_hi}")
 
 
 if __name__ == "__main__":

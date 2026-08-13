@@ -13,15 +13,21 @@ cmake -B build \
 cmake --build build
 ```
 
-Output: `build/CPUTempCSM.bin` (MacBinary). The build:
+Output: `build/CPUTempCSM.bin` (MacBinary). The module is a **native PowerPC CFM code
+fragment** (a `'cfrg'` import library with the PEF in the data fork), the same form every
+stock Control Strip module uses — this is what lets the Control Strip drag a copy of it out
+of the strip. The build:
 
-1. compiles `cpu_temp_csm.c` and links it as a code resource
-   (`-Wl,-eControlStripModule`), linking `ControlStripLib` (the `SB…` helpers) and
-   `NameRegistryLib` (device-tree access);
-2. runs `MakePEF` to produce the PowerPC code fragment;
-3. Rez's it into an `'sdev'` resource together with the Finder icon family
-   (`therm_icon.r`), stamping file type `sdev` / creator `CPUt`;
-4. runs `scripts/set-custom-icon.py` to set the Finder's `kHasCustomIcon` flag (Rez can't).
+1. compiles `cpu_temp_csm.c` and links it as a **shared code fragment**, exporting
+   `ControlStripModule` (via `cpu_temp_csm.exp`; `-Wl,-bE:…`), linking `ControlStripLib`
+   (the `SB…` helpers) and `NameRegistryLib` (device-tree access);
+2. runs `MakePEF` to produce the PEF, then `scripts/patch-pef-main.py` points the fragment's
+   `main` at `ControlStripModule` (we don't use `-e`, which would drop the export);
+3. Rez's the resource fork (a `'cfrg'` locator + Finder bundle `BNDL`/`FREF` + the icon family
+   `therm_icon.r` + `'vers'`) and puts the PEF in the **data fork** (`--data`), stamping file
+   type `sdev` / creator `CPUt`;
+4. runs `scripts/set-custom-icon.py` to set the Finder's `kHasBundle | kHasCustomIcon` flags
+   (Rez can't). `scripts/package-dist.sh` then re-encodes clean `.bin`/`.hqx` for distribution.
 
 Copy `build/CPUTempCSM.bin` to the Mac, decompress, and drop the result into
 **System Folder ▸ Control Strip Modules**; restart.
