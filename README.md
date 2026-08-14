@@ -96,9 +96,9 @@ Auto-detected from documented register maps, not yet confirmed on hardware:
   each). It's a Grackle / Heathrow machine that predates the Uni-N/KeyWest I²C the module scans for.
   Not "trapped behind the PMU" like the Mini — simply absent. The module shows `n/a`.
 
-Not sure what your machine has? Run **`CPUTempProbe`** (see [`probe/`](probe/)), or on a PowerBook
-the [TiBook probe](probe/tibook/) — they print the device-tree sensor nodes, the I²C controllers
-and their children, and attempt a read.
+Not sure what your machine has? Run a probe — they print the device-tree sensor nodes and I²C
+controllers and end with a verdict: [`CPUTempProbe`](probe/) (the original), the
+[TiBook probe](probe/tibook/), or the general [B&W / G3 probe](probe/bw/) (works on any G3/G4).
 
 ### Reading temperature on the Mac Mini G4 (and other PMU-sensor machines)
 
