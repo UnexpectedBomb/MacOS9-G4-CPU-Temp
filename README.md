@@ -90,6 +90,11 @@ Auto-detected from documented register maps, not yet confirmed on hardware:
   **Cypress PSoC** fan controller (a `fan` node of type `Psoc` in the device tree) that senses
   temperature internally and never exposes it as a readable sensor. The module shows `n/a`; use
   Open Firmware or Mac OS X.
+- **Power Mac G3 Blue & White (PowerMac1,1) — and pre-Uni-N G3s generally.** These have **no
+  temperature sensor at all** that the OS can see: no memory-mapped I²C controller, and no thermal
+  node anywhere in the device tree (a probe on a 350 MHz B&W scanned 98 nodes and found zero of
+  each). It's a Grackle / Heathrow machine that predates the Uni-N/KeyWest I²C the module scans for.
+  Not "trapped behind the PMU" like the Mini — simply absent. The module shows `n/a`.
 
 Not sure what your machine has? Run **`CPUTempProbe`** (see [`probe/`](probe/)), or on a PowerBook
 the [TiBook probe](probe/tibook/) — they print the device-tree sensor nodes, the I²C controllers
