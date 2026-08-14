@@ -557,6 +557,47 @@ static void DoMenu(TempState *st, const Rect *cell)
     st->shownVal = -30000;
 }
 
+/* ★★★★ v1.8 — NEVER DRAW THROUGH THE CACHED PORT WITHOUT PROVING IT IS STILL A PORT.
+ *
+ * The tickle self-repaint SetPorts into a GrafPtr cached from a PAST sdevDrawStatus. Nothing
+ * guaranteed that port still existed: if the Control Strip rebuilds or disposes its window/offscreen
+ * while the module stays loaded, the cached pointer dangles, and EraseRect/DrawString then make
+ * QuickDraw chase a freed port's PixMap chain — reading garbage and WRITING pixel data through it.
+ * That is a silent SYSTEM-HEAP scribbler: it corrupts whatever now lives where the port was, the
+ * damage surfaces much later in whoever touches the corrupted blocks, and the crash lands in the
+ * Control Strip's own later redraw (observed on a G4 MDD as a bus error in _BitsToPix with a wild
+ * PixMap pointer, and MacsBug reporting the system heap's free list bad). The window opens on desktop
+ * churn — every volume mount/eject repaints the strip — which is why heavy USB use surfaced it.
+ *
+ * The defence is layered, because a heap-validity oracle does not exist on OS 9:
+ *   1. structural checks before every self-draw: the pointer must look like a live CGrafPort
+ *      (version bits), its PixMap handle chain must be walkable and plausible, and our cached cell
+ *      must still sit inside its portRect;
+ *   2. any failure CLEARS the cache — self-drawing stops until the next REAL sdevDrawStatus hands us
+ *      a fresh port (the strip always redraws us when it rebuilds, so the cache re-arms itself);
+ *   3. the cache is refreshed on every sdevDrawStatus (pre-existing behaviour, kept). */
+static Boolean PortLooksAlive(GrafPtr p, const Rect *cell)
+{
+    UInt32 a = (UInt32)p, h, m, base;
+    SInt16 ver, rb;
+    volatile SInt16 *pr;
+    if (a < 0x1000UL || a >= 0x60000000UL || (a & 1)) return false;
+    ver = *(volatile SInt16 *)((char *)p + 6);            /* portVersion: CGrafPort has both top bits set */
+    if ((ver & (SInt16)0xC000) != (SInt16)0xC000) return false;
+    h = *(volatile UInt32 *)((char *)p + 2);              /* portPixMap (a Handle) */
+    if (h < 0x1000UL || h >= 0x60000000UL || (h & 3)) return false;
+    m = *(volatile UInt32 *)h;                            /* master pointer -> PixMap */
+    if (m < 0x1000UL || m >= 0x60000000UL || (m & 1)) return false;
+    rb = *(volatile SInt16 *)((char *)m + 4);             /* PixMap rowBytes: flag bit must be set */
+    if (!(rb & (SInt16)0x8000)) return false;
+    base = *(volatile UInt32 *)m;                         /* baseAddr */
+    if (base < 0x1000UL) return false;
+    pr = (volatile SInt16 *)((char *)p + 16);             /* portRect {top,left,bottom,right} */
+    if (cell->top < pr[0] || cell->left < pr[1] || cell->bottom > pr[2] || cell->right > pr[3])
+        return false;
+    return true;
+}
+
 /* Draw the reading + arrow into rect `r` of the CURRENT port. `erase` TRUE when
  * we are repainting ourselves during the periodic tickle (the strip has not
  * cleared the cell for us, unlike a normal sdevDrawStatus); FALSE for the strip-
@@ -662,11 +703,20 @@ pascal long ControlStripModule(long message, long params,
                     if (st->haveCache && st->cachePort != NULL
                         && (nv != st->shownVal || nr != st->shownRed || nm != st->shownMode)
                         && SBIsControlStripVisible()) {
-                        GrafPtr savePort;
-                        GetPort(&savePort);
-                        SetPort(st->cachePort);
-                        DrawCell(st, &st->cacheRect, true);   /* erase + repaint in place */
-                        SetPort(savePort);
+                        /* v1.8: the cached port must PROVE it is still a live port before we draw
+                         * through it. A dangling GrafPtr here was a silent system-heap scribbler —
+                         * see PortLooksAlive. On failure, drop the cache: the next real
+                         * sdevDrawStatus re-arms it with a fresh port. */
+                        if (!PortLooksAlive(st->cachePort, &st->cacheRect)) {
+                            st->haveCache = false;
+                            st->cachePort = NULL;
+                        } else {
+                            GrafPtr savePort;
+                            GetPort(&savePort);
+                            SetPort(st->cachePort);
+                            DrawCell(st, &st->cacheRect, true);   /* erase + repaint in place */
+                            SetPort(savePort);
+                        }
                     }
                     st->shownVal = nv;
                     st->shownRed = nr;

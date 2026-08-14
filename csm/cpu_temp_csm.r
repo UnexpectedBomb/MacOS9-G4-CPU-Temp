@@ -35,10 +35,10 @@ type 'vers' {
 };
 
 resource 'vers' (1) {
-    0x01, 0x70, 0x80, 0x00,
+    0x01, 0x80, 0x80, 0x00,
     0,
-    "1.7",
-    "1.7, github.com/UnexpectedBomb"
+    "1.8",
+    "1.8, github.com/UnexpectedBomb"
 };
 
 /* Finder bundle. Stock Control Strip modules all carry a BNDL/FREF (+ the
