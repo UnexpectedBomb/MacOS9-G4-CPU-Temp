@@ -50,7 +50,7 @@ resource 'vers' (1) {
  * 'CPUt'(0) is the required signature resource (its content is just a version
  * string, like the stock modules'). */
 data 'CPUt' (0) {
-    "1.7, github.com/UnexpectedBomb"
+    "1.8, github.com/UnexpectedBomb"
 };
 
 /* FREF: file type 'sdev', local icon ID 0, empty name. */
