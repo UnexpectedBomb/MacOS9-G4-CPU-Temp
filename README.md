@@ -69,6 +69,9 @@ carries **two** DS1775 sensors on the Uni-N bus — one per I²C channel. The mo
 channel-0 sensor as the CPU and the channel-1 sensor as the "Case" reading (its exact location on
 the board is unconfirmed). Note this varies within the line: see the 1 GHz below.
 
+Both MDD revisions are confirmed on hardware — the 2002 "Mirrored Drive Doors" and the 2003
+**FW800** (the FW800 verified running the community **MacOS9Lives** custom OS 9 installation).
+
 ### ⏳ Implemented, seeking testers
 
 Auto-detected from documented register maps, not yet confirmed on hardware:
