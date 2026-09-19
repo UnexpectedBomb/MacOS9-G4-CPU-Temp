@@ -21,6 +21,7 @@
  * it faults from a user-mode app, and the 750 has no OS-readable TAU anyway).
  */
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <MacTypes.h>
 #include <NameRegistry.h>
@@ -29,9 +30,87 @@
 #include <Multiprocessing.h>
 #include <Gestalt.h>
 #include <OSUtils.h>
+#include <Files.h>
+#include <Folders.h>
 
 #define PL(x) ((unsigned long)(x))
 #define kCantReportProcessorTemperatureErr (-13013)   /* MacErrors.h */
+
+/* ---------------------------------------------------------------------------
+ * Log file. Every line printed to the RetroConsole window is ALSO written to a
+ * plain-text file "BWProbe Log" on the Desktop, so the user can drop it on the
+ * Pi share and it is read back as TEXT -- no photographing the console window,
+ * and no scrollback loss. File Manager calls here are all at task/app level
+ * (never interrupt), so they are safe.
+ *
+ * Note: an open log written with FSWrite + FlushVol ONLY copies over the
+ * network at a STALE, truncated size, because the
+ * catalog EOF is only committed on close / PBFlushFile. So we PBFlushFile after
+ * every line (copy-safe while running) AND FSClose at quit (final commit), and
+ * we flush the log's OWN vRefNum, never the default volume (0).
+ * ------------------------------------------------------------------------- */
+static short   gLogRef  = 0;
+static short   gLogVol  = 0;
+static Boolean gLogOpen = false;
+
+static void log_open(void)
+{
+    FSSpec spec;
+    short  vref;
+    long   dir;
+    if (FindFolder(kOnSystemDisk, kDesktopFolderType, kDontCreateFolder,
+                   &vref, &dir) != noErr) return;
+    /* fnfErr is expected here (file does not exist yet) and still fills spec. */
+    FSMakeFSSpec(vref, dir, "\pBWProbe Log", &spec);
+    (void)FSpDelete(&spec);   /* start fresh; ignore "not found" */
+    (void)FSpCreate(&spec, 'ttxt', 'TEXT', smSystemScript);
+    if (FSpOpenDF(&spec, fsWrPerm, &gLogRef) != noErr) return;
+    gLogVol  = spec.vRefNum;
+    gLogOpen = true;
+}
+
+/* Write a C string to the log, converting '\n' -> '\r' so SimpleText shows the
+ * lines correctly. Committed per call so a mid-run network copy is complete. */
+static void log_puts(const char *s)
+{
+    char  cr[512];
+    long  n;
+    ParamBlockRec pb;
+    if (!gLogOpen) return;
+    while (*s) {
+        long len = 0;
+        while (*s && len < (long)sizeof(cr)) {
+            char c = *s++;
+            cr[len++] = (c == '\n') ? '\r' : c;
+        }
+        n = len;
+        FSWrite(gLogRef, &n, cr);
+    }
+    memset(&pb, 0, sizeof(pb));
+    pb.ioParam.ioRefNum = gLogRef;
+    PBFlushFileSync(&pb);          /* commit catalog EOF -> copy-safe while open */
+    FlushVol(NULL, gLogVol);       /* the log's OWN volume, not the default */
+}
+
+static void log_close(void)
+{
+    if (!gLogOpen) return;
+    FSClose(gLogRef);              /* final EOF commit */
+    FlushVol(NULL, gLogVol);
+    gLogOpen = false;
+}
+
+/* Console window + log file, in one call (replaces printf throughout). */
+static void LP(const char *fmt, ...)
+{
+    char    buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);   /* bounded: no vsprintf stack smash */
+    va_end(ap);
+    fputs(buf, stdout);   /* RetroConsole window */
+    log_puts(buf);        /* Desktop 'BWProbe Log' */
+}
 
 /* ---- KeyWest I2C register indices / bits (low_i2c.c) ---- */
 #define KW_MODE 0
@@ -134,13 +213,13 @@ static void scan_node(UInt32 base, UInt32 step)
             UInt8 b = 0, id = 0xFF;
             if (kw_read_dev(addrs[i], 0x00, &b, 1, KW_MODE_COMBINED, chan) == 0) {
                 kw_read_dev(addrs[i], 0x3D, &id, 1, KW_MODE_COMBINED, chan);
-                printf("      *** ACK addr=0x%02x chan=%d  reg00=0x%02x reg3D=0x%02x\n",
+                LP("      *** ACK addr=0x%02x chan=%d  reg00=0x%02x reg3D=0x%02x\n",
                        addrs[i], chan, b, id);
                 found = 1; gI2cAcks++;
             }
         }
     }
-    if (!found) printf("      (no temp-sensor ACK, chan 0-1)\n");
+    if (!found) LP("      (no temp-sensor ACK, chan 0-1)\n");
     gBase = saveB; gShift = saveS;
 }
 
@@ -156,8 +235,8 @@ static void enumerate_i2c(void)
     RegEntryID   node;
     Boolean      done = false, first = true;
     int count = 0, ctlrs = 0;
-    printf("[C] i2c controllers (sweep only KeyWest/Uni-N; others listed only):\n");
-    if (RegistryEntryIterateCreate(&it) != noErr) { printf("    iterate FAILED\n"); return; }
+    LP("[C] i2c controllers (sweep only KeyWest/Uni-N; others listed only):\n");
+    if (RegistryEntryIterateCreate(&it) != noErr) { LP("    iterate FAILED\n"); return; }
     for (;;) {
         char name[64], compat[160], dtype[48];
         UInt32 aa[8], step = 0x10, reg[8];
@@ -179,19 +258,19 @@ static void enumerate_i2c(void)
         haveAAPL = (RegistryPropertyGet(&node, "AAPL,address", aa, &sz) == noErr);
         { RegPropertyValueSize s = 4; step = 0x10; RegistryPropertyGet(&node, "AAPL,address-step", &step, &s); }
         reg[0] = 0; { RegPropertyValueSize s = sizeof(reg); haveReg = (RegistryPropertyGet(&node, "reg", reg, &s) == noErr); }
-        printf("    i2c: name='%s' compat='%s' AAPL=%s0x%08lx reg=0x%08lx(%s)\n",
+        LP("    i2c: name='%s' compat='%s' AAPL=%s0x%08lx reg=0x%08lx(%s)\n",
                name, compat, haveAAPL ? "" : "(none) ", PL(aa[0]),
                PL(reg[0]), haveReg ? "ok" : "none");
         isKW = buf_has(compat, (long)sizeof(compat), "keywest")
             || buf_has(compat, (long)sizeof(compat), "uni-n");
-        if (!isKW) { printf("      (not KeyWest/Uni-N: listed only, not swept)\n"); continue; }
+        if (!isKW) { LP("      (not KeyWest/Uni-N: listed only, not swept)\n"); continue; }
         if (haveAAPL)     base = aa[0];
         else if (haveReg) base = reg[0] + 3;
-        else { printf("      (no MMIO base: cannot sweep)\n"); continue; }
+        else { LP("      (no MMIO base: cannot sweep)\n"); continue; }
         scan_node(base, step);
     }
     RegistryEntryIterateDispose(&it);
-    printf("    [%d nodes scanned; %d i2c controller(s); %d sensor ACK(s) total]\n\n",
+    LP("    [%d nodes scanned; %d i2c controller(s); %d sensor ACK(s) total]\n\n",
            count, ctlrs, gI2cAcks);
 }
 
@@ -205,8 +284,8 @@ static int dump_sensor_nodes(void)
     RegEntryID   node;
     Boolean      done = false, first = true;
     int n = 0;
-    printf("[D] Device-tree temp/thermal/sensor nodes:\n");
-    if (RegistryEntryIterateCreate(&it) != noErr) { printf("    iterate FAILED\n"); return 0; }
+    LP("[D] Device-tree temp/thermal/sensor nodes:\n");
+    if (RegistryEntryIterateCreate(&it) != noErr) { LP("    iterate FAILED\n"); return 0; }
     for (;;) {
         char name[64], compat[160], dtype[48];
         UInt32 reg[8];
@@ -224,13 +303,13 @@ static int dump_sensor_nodes(void)
                 || buf_has(dtype, (long)sizeof(dtype), kw[i])) { hit = 1; break; }
         if (!hit) continue;
         reg[0] = reg[1] = 0; sz = sizeof(reg); RegistryPropertyGet(&node, "reg", reg, &sz);
-        printf("    '%s' compat='%s' type='%s' reg=0x%lx,0x%lx\n",
+        LP("    '%s' compat='%s' type='%s' reg=0x%lx,0x%lx\n",
                name, compat, dtype, PL(reg[0]), PL(reg[1]));
         n++;
     }
     RegistryEntryIterateDispose(&it);
-    if (!n) printf("    (none found)\n");
-    printf("    [%d thermal-ish node(s)]\n\n", n);
+    if (!n) LP("    (none found)\n");
+    LP("    [%d thermal-ish node(s)]\n\n", n);
     return n;
 }
 
@@ -253,24 +332,24 @@ static SInt32 test_core_temp(int *supported)
     SInt32 r0 = 0;
     int i;
     *supported = 0;
-    printf("[B] GetCoreProcessorTemperature (PowerMgrLib):\n");
+    LP("[B] GetCoreProcessorTemperature (PowerMgrLib):\n");
     if (GetSharedLibrary("\pPowerMgrLib", kPowerPCCFragArch, kReferenceCFrag,
                          &conn, &mainAddr, errName) != noErr) {
-        printf("    PowerMgrLib not available.\n\n"); return 0;
+        LP("    PowerMgrLib not available.\n\n"); return 0;
     }
     if (FindSymbol(conn, "\pGetCoreProcessorTemperature", &symAddr, &cls) != noErr || !symAddr) {
-        printf("    symbol not found.\n\n"); return 0;
+        LP("    symbol not found.\n\n"); return 0;
     }
     fn = (GCPTProc)symAddr;
     for (i = 0; i < 4; i++) {
         SInt32 r = fn((MPCpuID)(long)i);
         if (i == 0) r0 = r;
-        printf("      cpuID=%d -> 0x%08lx = %ld dec | /256=%ld C\n",
+        LP("      cpuID=%d -> 0x%08lx = %ld dec | /256=%ld C\n",
                i, PL((UInt32)r), (long)r, (long)r / 256);
     }
     if (r0 == kCantReportProcessorTemperatureErr)
-        printf("    => kCantReportProcessorTemperatureErr (-13013): unsupported here.\n\n");
-    else { *supported = 1; printf("    => NON-error result — investigate the unit above!\n\n"); }
+        LP("    => kCantReportProcessorTemperatureErr (-13013): unsupported here.\n\n");
+    else { *supported = 1; LP("    => NON-error result — investigate the unit above!\n\n"); }
     return r0;
 }
 
@@ -281,7 +360,7 @@ static void report_machine_model(void)
     RegEntryIter it;
     RegEntryID   node;
     Boolean      done = false, first = true;
-    if (RegistryEntryIterateCreate(&it) != noErr) { printf("\n"); return; }
+    if (RegistryEntryIterateCreate(&it) != noErr) { LP("\n"); return; }
     for (;;) {
         char compat[160], model[64];
         RegPropertyValueSize sz;
@@ -294,12 +373,12 @@ static void report_machine_model(void)
             && !buf_has(compat, (long)sizeof(compat), "MacRISC")) continue;
         memset(model, 0, sizeof(model)); sz = sizeof(model) - 1;
         RegistryPropertyGet(&node, "model", model, &sz);
-        printf("model='%s' compatible='%s'\n", model, compat);
+        LP("model='%s' compatible='%s'\n", model, compat);
         RegistryEntryIterateDispose(&it);
         return;
     }
     RegistryEntryIterateDispose(&it);
-    printf("(machine model not found)\n");
+    LP("(machine model not found)\n");
 }
 
 int main(void)
@@ -308,39 +387,47 @@ int main(void)
     int gcptOk = 0, treeNodes;
 
     setvbuf(stdout, NULL, _IONBF, 0);
-    printf("==== B&W / G3 Temp Sensor Diagnostic v1 ====\n\n");
+    log_open();   /* mirror everything below to 'BWProbe Log' on the Desktop */
+    LP("==== B&W / G3 Temp Sensor Diagnostic v2 ====\n");
+    LP(gLogOpen ? "(logging to 'BWProbe Log' on the Desktop)\n\n"
+                : "(could not open a Desktop log file; console only)\n\n");
 
-    printf("[A] CPU: ");
+    LP("[A] CPU: ");
     if (Gestalt(gestaltNativeCPUtype, &cpu) == noErr)
-        printf("gestaltNativeCPUtype=0x%lx %s\n", PL(cpu),
+        LP("gestaltNativeCPUtype=0x%lx %s\n", PL(cpu),
                cpu == gestaltCPUG4 ? "(G4 family)" : cpu == gestaltCPU750 ? "(750/G3)" : "");
-    else printf("(Gestalt failed)\n");
+    else LP("(Gestalt failed)\n");
     { long mt = 0;
-      if (Gestalt(gestaltMachineType, &mt) == noErr) printf("    gestaltMachineType=%ld ", mt);
+      if (Gestalt(gestaltMachineType, &mt) == noErr) LP("    gestaltMachineType=%ld ", mt);
       /* New World Macs report a generic type; the real model is the device-tree
        * root "model"/"compatible" (e.g. "PowerMac1,1" for the B&W). */
       report_machine_model();
     }
-    printf("    (on-die TAU not tested: privileged SPR, faults from an app)\n\n");
+    LP("    (on-die TAU not tested: privileged SPR, faults from an app)\n\n");
 
     (void)test_core_temp(&gcptOk);   /* [B] GetCoreProcessorTemperature */
     enumerate_i2c();                 /* [C] i2c sensor sweep */
     treeNodes = dump_sensor_nodes(); /* [D] device-tree thermal nodes */
 
     /* -------- VERDICT (last, for the no-scrollback console) -------- */
-    printf("======================= VERDICT =======================\n");
-    printf("  GCPT (OS call) .. %s\n", gcptOk ? "returned a value (investigate!)" : "unsupported (-13013)");
-    printf("  i2c sensor ACKs . %d\n", gI2cAcks);
-    printf("  thermal nodes ... %d in device tree\n", treeNodes);
+    LP("======================= VERDICT =======================\n");
+    LP("  GCPT (OS call) .. %s\n", gcptOk ? "returned a value (investigate!)" : "unsupported (-13013)");
+    LP("  i2c sensor ACKs . %d\n", gI2cAcks);
+    LP("  thermal nodes ... %d in device tree\n", treeNodes);
     if (gcptOk || gI2cAcks > 0)
-        printf("  >>> SOMETHING is readable — see the marked lines above.\n");
+        LP("  >>> SOMETHING is readable — see the marked lines above.\n");
     else
-        printf("  >>> NO READABLE CPU TEMPERATURE SENSOR on this Mac.\n"
+        LP("  >>> NO READABLE CPU TEMPERATURE SENSOR on this Mac.\n"
                "      (Expected on a pre-Uni-N G3 such as the B&W: no KeyWest i2c\n"
                "       controller to scan, and no thermal sensor node in the tree.)\n");
-    printf("=======================================================\n");
+    LP("=======================================================\n");
 
-    printf("\n(Press Return to quit.)\n");
+    if (gLogOpen)
+        LP("\n(Full report saved to 'BWProbe Log' on the Desktop -- drop it on\n"
+           " the Pi share to send it back. Press Return to quit.)\n");
+    else
+        LP("\n(Press Return to quit.)\n");
+    log_close();     /* final EOF commit before we wait for the user */
     getchar();
     return 0;
 }

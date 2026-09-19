@@ -98,6 +98,12 @@ Auto-detected from documented register maps, not yet confirmed on hardware:
   node anywhere in the device tree (a probe on a 350 MHz B&W scanned 98 nodes and found zero of
   each). It's a Grackle / Heathrow machine that predates the Uni-N/KeyWest I²C the module scans for.
   Not "trapped behind the PMU" like the Mini — simply absent. The module shows `n/a`.
+- **PowerBook G3 "Wallstreet" / "PDQ" (`AAPL,PowerBook1998`) — and Old World G3s generally.** Same
+  result as the B&W, and an even cleaner example of the same cause: a 233 MHz Wallstreet reports the
+  **Old World** machine id `AAPL,PowerBook1998` (Old World ROM Macs identify as `AAPL,<name>`, not
+  `PowerBookN,N`), scanned 67 device-tree nodes and found **zero I²C controllers and zero thermal
+  nodes** — and its older PowerMgrLib doesn't even export `GetCoreProcessorTemperature`. It predates
+  the Uni-N/KeyWest I²C entirely. The module shows `n/a`.
 
 Not sure what your machine has? Run a probe — they print the device-tree sensor nodes and I²C
 controllers and end with a verdict: [`CPUTempProbe`](probe/) (the original), the

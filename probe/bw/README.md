@@ -37,8 +37,11 @@ them). It does **not** access any privileged CPU register.
 3. Double-click `BWProbe`. A console window opens and prints the report.
 4. It ends with `(Press Return to quit.)`.
 
-The console has no scrollback, so the important part (the `VERDICT` block and the
-`[C]`/`[D]` sections) is at the very bottom. A photo of the lower half is enough.
+It also writes the full report to a plain-text file, **`BWProbe Log` on the
+Desktop**, so you don't have to read anything off the screen — just open that
+file (or send it back) and it has the whole run, `VERDICT` block included. The
+console window has no scrollback, so the log is the reliable copy; a photo of
+the lower half of the window works too if you'd rather.
 
 ## Building from source
 
